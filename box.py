@@ -72,7 +72,13 @@ if contours:
 
 cv2.imshow("Preprocessing Scatola", closing)
 
+mask = np.zeros_like(closing)
+if contours:
+    biggest = max(contours, key=cv2.contourArea)
+    cv2.drawContours(mask, [biggest], -1, 255, -1)
 closing = mask
+
+
 
 
 
