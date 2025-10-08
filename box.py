@@ -50,6 +50,50 @@ else:
     print("⚠️ Nessun cerchio trovato.")
     exit()
 
+# --- Preprocessing scatola ---
+gray_box = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)        # grigio
+gray_box = cv2.GaussianBlur(gray_box, (5,5), 0)
+gray_box = cv2.bilateralFilter(gray_box, 9, 75, 75)
+gray_box = cv2.equalizeHist(gray_box)
+
+# soglia adattiva o normale (non invertita)
+_, thresh = cv2.threshold(gray_box, 160, 255, cv2.THRESH_BINARY)
+
+# chiusura per unire i bordi della scatola
+kernel = np.ones((5,5), np.uint8)
+closing = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+# trova solo il contorno più grande (la scatola)
+contours, _ = cv2.findContours(closing, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+if contours:
+    biggest = max(contours, key=cv2.contourArea)
+    mask = np.zeros_like(closing)
+    cv2.drawContours(mask, [biggest], -1, 255, -1)
+
+cv2.imshow("Preprocessing Scatola", closing)
+
+closing = mask
+
+
+
+# Ridimensionamento per mostrare sullo schermo
+height_box, width_box = closing.shape[:2]
+max_display_height = 800
+max_display_width  = 1200
+scale = min(max_display_width / width_box, max_display_height / height_box)
+new_width = int(width_box * scale)
+new_height = int(height_box * scale)
+closing_resized = cv2.resize(closing, (new_width, new_height))
+
+cv2.imshow("Preprocessing Scatola", closing_resized)
+cv2.waitKey(0)
+cv2.destroyAllWindows()
+
+
+
+
+
+
 # --- Mostra immagine mantenendo proporzioni ---
 max_display_height = 800  # massimo in pixel sullo schermo
 max_display_width  = 1200
