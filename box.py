@@ -53,30 +53,30 @@ else:
 # --- Preprocessing scatola ---
 gray_box = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)        # grigio
 gray_box = cv2.GaussianBlur(gray_box, (5,5), 0)
-gray_box = cv2.bilateralFilter(gray_box, 9, 75, 75)
 gray_box = cv2.equalizeHist(gray_box)
 
-# soglia adattiva o normale (non invertita)
+
+# soglia
 _, thresh = cv2.threshold(gray_box, 160, 255, cv2.THRESH_BINARY)
 
 # chiusura per unire i bordi della scatola
-kernel = np.ones((5,5), np.uint8)
-closing = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
+kernel = np.ones((3,3), np.uint8)
+# elimina piccoli rumori
+opening = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
+# poi fai la chiusura per unire i bordi
+closing = cv2.morphologyEx(opening, cv2.MORPH_CLOSE, kernel, iterations=2)
 
-# trova solo il contorno più grande (la scatola)
-contours, _ = cv2.findContours(closing, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-if contours:
-    biggest = max(contours, key=cv2.contourArea)
-    mask = np.zeros_like(closing)
-    cv2.drawContours(mask, [biggest], -1, 255, -1)
+# elimina dettagli interni piccoli
+clean = cv2.morphologyEx(closing, cv2.MORPH_OPEN, kernel, iterations=2)
 
-cv2.imshow("Preprocessing Scatola", closing)
+clean = cv2.dilate(clean, kernel, iterations=2)  # allarga i bordi
+clean = cv2.erode(clean, kernel, iterations=2)   # li rimette alla dimensione originale
 
-mask = np.zeros_like(closing)
-if contours:
-    biggest = max(contours, key=cv2.contourArea)
-    cv2.drawContours(mask, [biggest], -1, 255, -1)
-closing = mask
+
+
+
+
+
 
 
 
