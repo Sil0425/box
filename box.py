@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 
 # --- Carica immagine ---
-image = cv2.imread("img.jpg")
+image = cv2.imread("box.jpeg")
 if image is None:
     print("❌ ERRORE: Immagine non trovata.")
     exit()
@@ -10,16 +10,15 @@ print("✅ Immagine caricata.")
 
 height, width = image.shape[:2]
 
-# --- Rilevamento moneta (come prima) ---
-offset_x = width // 2
+offset_x = 0
 offset_y = 0
-crop_height = height // 3
-top_right = image[offset_y:offset_y + crop_height, offset_x:width]
 
-gray = cv2.cvtColor(top_right, cv2.COLOR_BGR2GRAY)
+# --- Preprocessing ---
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 gray = cv2.bilateralFilter(gray, 9, 75, 75)
 gray = cv2.equalizeHist(gray)
 
+# --- Rilevamento cerchi ---
 circles = cv2.HoughCircles(
     gray,
     cv2.HOUGH_GRADIENT,
@@ -28,77 +27,99 @@ circles = cv2.HoughCircles(
     param1=100,
     param2=40,
     minRadius=20,
-    maxRadius=50
+    maxRadius=30
 )
 
+# --- Rilevamento moneta con filtri + calcolo scala ---
 if circles is not None:
     circles = np.uint16(np.around(circles))
-    for i in circles[0, :1]:
-        center_local = (i[0], i[1])
-        radius = i[2]
-        center_global = (center_local[0] + offset_x, center_local[1])
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.float32)  # Lab per distanze colore più robuste
+    edges = cv2.Canny(gray, 80, 150)
 
-        print(f"🟢 Centro globale moneta: {center_global}, Raggio: {radius}px")
-        diametro_px = radius * 2
+    candidates = []
+    for c in circles[0, :]:
+        x, y, r = int(c[0]), int(c[1]), int(c[2])
+
+        # salta cerchi troppo vicino ai bordi dell'immagine
+        if x - r < 5 or y - r < 5 or x + r > width - 5 or y + r > height - 5:
+            continue
+        if not (18 < r < 70):
+            continue
+
+        # maschera interno del cerchio (escludiamo il bordo)
+        mask_in = np.zeros(gray.shape, np.uint8)
+        cv2.circle(mask_in, (x, y), max(1, r - 3), 255, -1)
+
+        # maschera annulus (area di background attorno al cerchio)
+        outer = int(min(min(width, height) - 1, r + int(r * 1.4) + 5))
+        mask_ann = np.zeros(gray.shape, np.uint8)
+        cv2.circle(mask_ann, (x, y), outer, 255, -1)
+        cv2.circle(mask_ann, (x, y), r + 4, 0, -1)
+
+        if np.count_nonzero(mask_ann) == 0 or np.count_nonzero(mask_in) == 0:
+            continue
+
+        # media colore (Lab) dentro e nell'annulus
+        mean_in = np.array(cv2.mean(lab, mask=mask_in)[:3])
+        mean_ann = np.array(cv2.mean(lab, mask=mask_ann)[:3])
+        color_dist = np.linalg.norm(mean_in - mean_ann)  # distanza colore medio
+
+        # distanza pixel-per-pixel dal colore medio dell'annulus -> fill ratio
+        inside_pixels = lab[mask_in == 255][:, :3]
+        if inside_pixels.size == 0:
+            continue
+        dists = np.linalg.norm(inside_pixels - mean_ann, axis=1)
+        tol = 12.0            # tolleranza colore (regolabile)
+        fill_ratio = np.mean(dists <= tol)  # percentuale di pixel dentro simili al background
+
+        # deviazione dentro il cerchio (moneta -> più varianza)
+        std_dev = float(np.std(gray[mask_in == 255]))
+
+        # contorno medio (aiuta se logo ha bordo debole)
+        y0, y1 = max(0, y - r), min(height, y + r)
+        x0, x1 = max(0, x - r), min(width, x + r)
+        perimeter_strength = float(np.mean(edges[y0:y1, x0:x1]))
+
+        candidates.append({
+            "x": x, "y": y, "r": r,
+            "color_dist": float(color_dist),
+            "fill_ratio": float(fill_ratio),
+            "std": std_dev,
+            "perim": perimeter_strength
+        })
+
+    # DECISIONE: preferiamo cerchi con fill_ratio basso (cioè NON riempiti come il cartone)
+    valid = [c for c in candidates if c["fill_ratio"] < 0.6 and c["color_dist"] > 8]
+
+    # fallback se nessuno passa: usa std_dev o perim come criterio
+    if not valid:
+        valid = [c for c in candidates if c["std"] > 14 or c["perim"] > 10]
+
+    if valid:
+        # punteggio composito per scegliere il migliore
+        def score(c):
+            return (1.0 - c["fill_ratio"]) * 2.0 + c["std"] / 30.0 + c["color_dist"] / 30.0 + c["perim"] / 15.0
+        best = max(valid, key=score)
+        x, y, r = best["x"], best["y"], best["r"]
+
+        # --- qui calcoli le misure e la scala ---
+        # Se stai processando un ritaglio, applica gli offset per ottenere coordinate globali
+        center_global = (int(x + offset_x), int(y + offset_y))
+
+        diametro_px = float(r * 2)
+        # 23.25 è il diametro reale della moneta in mm (adatta se usi altra moneta)
         scala_px_per_mm = diametro_px / 23.25
-        print(f"📏 Diametro moneta in px: {diametro_px:.2f} -> Scala: {scala_px_per_mm:.2f} px/mm")
 
-        cv2.circle(image, center_global, radius, (0, 255, 0), 2)
+        print(f"🟢 Moneta trovata: (x={center_global[0]}, y={center_global[1]}, r={r})")
+        print(f"📏 Diametro in px: {diametro_px:.2f}  -> Scala: {scala_px_per_mm:.2f} px/mm")
+
+        # disegna sul frame usando coordinate globali
+        cv2.circle(image, center_global, r, (0, 255, 0), 2)
         cv2.circle(image, center_global, 3, (0, 0, 255), -1)
-
+    else:
+        print("⚠️ Nessuna moneta valida trovata ")
 else:
     print("⚠️ Nessun cerchio trovato.")
-    exit()
-
-# --- Preprocessing scatola ---
-gray_box = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)        # grigio
-gray_box = cv2.GaussianBlur(gray_box, (5,5), 0)
-gray_box = cv2.equalizeHist(gray_box)
-
-
-# soglia
-_, thresh = cv2.threshold(gray_box, 160, 255, cv2.THRESH_BINARY)
-
-# chiusura per unire i bordi della scatola
-kernel = np.ones((3,3), np.uint8)
-# elimina piccoli rumori
-opening = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
-# poi fai la chiusura per unire i bordi
-closing = cv2.morphologyEx(opening, cv2.MORPH_CLOSE, kernel, iterations=2)
-
-# elimina dettagli interni piccoli
-clean = cv2.morphologyEx(closing, cv2.MORPH_OPEN, kernel, iterations=2)
-
-clean = cv2.dilate(clean, kernel, iterations=2)  # allarga i bordi
-clean = cv2.erode(clean, kernel, iterations=2)   # li rimette alla dimensione originale
-
-
-
-
-
-
-
-
-
-
-
-# Ridimensionamento per mostrare sullo schermo
-height_box, width_box = closing.shape[:2]
-max_display_height = 800
-max_display_width  = 1200
-scale = min(max_display_width / width_box, max_display_height / height_box)
-new_width = int(width_box * scale)
-new_height = int(height_box * scale)
-closing_resized = cv2.resize(closing, (new_width, new_height))
-
-cv2.imshow("Preprocessing Scatola", closing_resized)
-cv2.waitKey(0)
-cv2.destroyAllWindows()
-
-
-
-
-
 
 # --- Mostra immagine mantenendo proporzioni ---
 max_display_height = 800  # massimo in pixel sullo schermo
