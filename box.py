@@ -139,67 +139,77 @@ def detect_coin(img, config):
 
 
 def detect_box(img, scala_px_per_mm, config):
-    """Rileva la scatola e ritorna dimensioni reali in mm"""
+    """Rileva la scatola e ritorna dimensioni reali in mm con debug step-by-step"""
     height, width = img.shape[:2]
 
     # Conversione HSV
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     hue, sat, val = cv2.split(hsv)
+    cv2.imshow("Debug - HSV Saturation", resize_for_display(sat))
+    cv2.waitKey(0)
 
     # Threshold sul canale Saturation
     _, mask = cv2.threshold(sat, config["mask_sat_thresh"], 255, cv2.THRESH_BINARY)
+    cv2.imshow("Debug - Threshold", resize_for_display(mask))
+    cv2.waitKey(0)
 
     kernel = np.ones((3, 3), np.uint8)
 
-    # Operazioni morfologiche
-    mask = cv2.dilate(mask, kernel)  # okk
+    # DILATE
+    mask = cv2.dilate(mask, kernel)
+    cv2.imshow("Debug - Dilate", resize_for_display(mask))
+    cv2.waitKey(0)
+
+    # MORPH CLOSE
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=2)  # top
+    cv2.imshow("Debug - Morph Close", resize_for_display(mask))
+    cv2.waitKey(0)
+
+    # MORPH OPEN
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=2)
+    cv2.imshow("Debug - Morph Open", resize_for_display(mask))
+    cv2.waitKey(0)
 
     # Trova contorni
     contours, hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    contours = [c for c in contours if cv2.contourArea(c) > config["contour_min_area"]]  # Prendo contorno principale
+    contours = [c for c in contours if cv2.contourArea(c) > config["contour_min_area"]]
 
     if not contours:
         print("⚠️ Nessun contorno valido trovato nella maschera.")
-        cv2.imshow("Debug - Mask", resize_for_display(mask))
+        cv2.imshow("Debug - Mask Finale", resize_for_display(mask))
         cv2.waitKey(0)
         cv2.destroyAllWindows()
         return None, None, None
 
     c = max(contours, key=cv2.contourArea)
 
-    # Prendo tutti i punti del contorno
-    pts = c.reshape(-1, 2)
+    # Contorno finale disegnato
+    img_box = img.copy()
+    cv2.drawContours(img_box, [c], -1, (0, 255, 0), 2)
+    cv2.imshow("Debug - Contorno", resize_for_display(img_box))
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
 
-    # Calcolo l’asse principale con PCA se la scatola non è perfettamente allineata
+    # PCA per dimensioni reali
+    pts = c.reshape(-1, 2)
     pts_centered = pts - pts.mean(axis=0)
     cov = np.cov(pts_centered.T)
     eigvals, eigvecs = np.linalg.eig(cov)
     main_axis = eigvecs[:, np.argmax(eigvals)]
     perp_axis = eigvecs[:, np.argmin(eigvals)]
 
-    # Proiezione di tutti i punti sull’asse principale e su quello perpendicolare
     proj_main = pts_centered @ main_axis
     proj_perp = pts_centered @ perp_axis
-
     width_px = proj_main.max() - proj_main.min()
     height_px = proj_perp.max() - proj_perp.min()
-
-    # Conversione in mm usando scala
     width_mm = width_px / scala_px_per_mm
     height_mm = height_px / scala_px_per_mm
 
     print(f"Larghezza reale: {width_mm:.2f} mm")
     print(f"Altezza reale: {height_mm:.2f} mm")
 
-    img_box = img.copy()
-    cv2.drawContours(img_box, [c], -1, (0, 255, 0), 2)
-    cv2.imshow("Contorno", resize_for_display(img_box))
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-
     return width_mm, height_mm, c
+
 
 
 if __name__ == "__main__":
